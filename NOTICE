@@ -1,0 +1,9 @@
+Faxtur
+
+Copyright © 2026 Frédéric Brouard
+
+This software is licensed under the Mozilla Public License 2.0.
+https://mozilla.org/MPL/2.0/
+
+Faxtur generates and validates Factur-X / PDF-A-3 electronic invoices.
+Factur-X is a third-party electronic invoice standard; Faxtur is an independent software project.

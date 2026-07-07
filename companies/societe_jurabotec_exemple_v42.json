@@ -1,0 +1,27 @@
+{
+  "name": "Jurabotec",
+  "legal_form": "SAS",
+  "siren": "810944835",
+  "siret": "81094483500018",
+  "vat": "FR21810944835",
+  "ape": "1610A",
+  "address1": "1 Grande Rue",
+  "address2": "",
+  "postcode": "39460",
+  "city": "FONCINE-LE-HAUT",
+  "country": "FR",
+  "email": "info@jurabotec.com",
+  "phone": "0384519514",
+  "iban": "FR7610807000132232150069082",
+  "bic": "CCBPFRPPDJN",
+  "invoice_template": {
+    "validated": false,
+    "validated_at": "",
+    "sample_file": "",
+    "score": 0,
+    "fields": {},
+    "notes": "",
+    "issuer_match": {},
+    "model_hints": {}
+  }
+}

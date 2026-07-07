@@ -1,0 +1,27 @@
+{
+  "name": "Q-CHEM FRANCE S.A.R.L.",
+  "legal_form": "SARL",
+  "siren": "499540508",
+  "siret": "49954050800011",
+  "vat": "FR54499540508",
+  "ape": "4673A",
+  "address1": "23 RUE D'ANJOU",
+  "address2": "",
+  "postcode": "75008",
+  "city": "PARIS",
+  "country": "FR",
+  "email": "contact@qchemfrance.com",
+  "phone": "+33 (0) 1 64 47 87 50",
+  "iban": "FR7630004008390001008638962",
+  "bic": "BNPAFRPPXXX",
+  "invoice_template": {
+    "validated": false,
+    "validated_at": "",
+    "sample_file": "",
+    "score": 0,
+    "fields": {},
+    "notes": "",
+    "issuer_match": {},
+    "model_hints": {}
+  }
+}

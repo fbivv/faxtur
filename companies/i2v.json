@@ -1,0 +1,75 @@
+{
+  "name": "I2V",
+  "legal_form": "SAS",
+  "siren": "810287078",
+  "siret": "81028707800028",
+  "vat": "FR21810287078",
+  "ape": "6420Z",
+  "address1": "14 chemin de la Lardiere",
+  "address2": "",
+  "postcode": "39300",
+  "city": "CIZE",
+  "country": "FR",
+  "email": "fb@ivv39.fr",
+  "phone": "0683603732",
+  "iban": "FR7610278087350002114070176",
+  "bic": "CMCIFR2A",
+  "invoice_template": {
+    "validated": true,
+    "validated_at": "2026-07-06T09:31:15",
+    "sample_file": "C:/Users/LEGION/OneDrive/Bureau/Factures/FA2304-0005.pdf",
+    "score": 100,
+    "fields": {
+      "invoice_number": "FA2304-0005",
+      "invoice_date": "20230406",
+      "invoice_date_display": "06/04/2023",
+      "due_date": "",
+      "due_date_display": "",
+      "total_ht": "3330.00",
+      "total_tva": "666.00",
+      "total_ttc": "3996.00",
+      "vat_rate": "20.00",
+      "customer_block": "Jurabotec SAS",
+      "buyer_vat": "FR21810944835",
+      "description": "Facture selon document PDF original"
+    },
+    "notes": "Modèle validé manuellement par l'utilisateur.",
+    "issuer_match": {
+      "score": 95,
+      "checks": [
+        {
+          "label": "TVA émetteur présente",
+          "ok": true,
+          "points": 35
+        },
+        {
+          "label": "SIRET émetteur présent",
+          "ok": true,
+          "points": 25
+        },
+        {
+          "label": "SIREN émetteur présent",
+          "ok": true,
+          "points": 15
+        },
+        {
+          "label": "Nom société présent",
+          "ok": true,
+          "points": 15
+        },
+        {
+          "label": "Email présent",
+          "ok": true,
+          "points": 5
+        },
+        {
+          "label": "IBAN présent",
+          "ok": false,
+          "points": 0
+        }
+      ]
+    },
+    "model_hints": {}
+  },
+  "invoice_model": "i2v_tcpdf"
+}

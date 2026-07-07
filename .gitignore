@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.venv/
+venv/
+
+# Build outputs
+build/
+dist/
+*.spec
+*.exe
+*.msi
+Output/
+installer/output/
+
+
+# User data
+factures/
+facturx/
+a_traiter/
+logs/
+temp/
+*.log
+journal*.csv
+
+# Local configuration
+config/settings.json
+settings.json
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

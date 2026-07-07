@@ -25,12 +25,12 @@ try:
     from pypdf import PdfReader, PdfWriter
     from pypdf.generic import (
         NameObject, TextStringObject, NumberObject, ArrayObject,
-        ByteStringObject, DecodedStreamObject, DictionaryObject,
+        ByteStringObject, DecodedStreamObject, DictionaryObject, BooleanObject,
     )
 except Exception as exc:  # pragma: no cover
     PdfReader = None
     PdfWriter = None
-    NameObject = TextStringObject = NumberObject = ArrayObject = ByteStringObject = DecodedStreamObject = DictionaryObject = None
+    NameObject = TextStringObject = NumberObject = ArrayObject = ByteStringObject = DecodedStreamObject = DictionaryObject = BooleanObject = None
     PYPDF_IMPORT_ERROR = exc
 else:
     PYPDF_IMPORT_ERROR = None
@@ -98,7 +98,7 @@ def xmp_packet(title: str) -> bytes:
       <fx:DocumentType>INVOICE</fx:DocumentType>
       <fx:DocumentFileName>factur-x.xml</fx:DocumentFileName>
       <fx:Version>1.0</fx:Version>
-      <fx:ConformanceLevel>BASIC WL</fx:ConformanceLevel>
+      <fx:ConformanceLevel>BASIC</fx:ConformanceLevel>
     </rdf:Description>
   </rdf:RDF>
 </x:xmpmeta>
@@ -338,37 +338,45 @@ def embed_xml_in_pdf(input_pdf: str | Path, output_pdf: str | Path, xml_bytes: b
         NameObject("/Subtype"): mime_name,
         NameObject("/Params"): DictionaryObject({
             NameObject("/Size"): NumberObject(len(xml_bytes)),
+            NameObject("/CreationDate"): pdf_date_now(),
             NameObject("/ModDate"): pdf_date_now(),
         }),
     })
     embedded_ref = writer._add_object(embedded_stream)
 
-    # 2) File specification indirect. On ajoute aussi /Subtype ici par prudence,
-    # certains validateurs parlent de "file specification dictionary".
+    # 2) File specification indirect.
+    # Structure volontairement proche des PDF Factur-X acceptés par FacturXApp :
+    # - pas de /Subtype dans le Filespec ;
+    # - un seul /EF /F ;
+    # - /Names directement dans le Catalog, pas via deux objets indirects inutiles.
     filespec = DictionaryObject({
         NameObject("/Type"): NameObject("/Filespec"),
         NameObject("/F"): TextStringObject(filename),
         NameObject("/UF"): TextStringObject(filename),
-        NameObject("/Desc"): TextStringObject("Factur-X XML invoice data"),
-        NameObject("/AFRelationship"): NameObject("/Alternative"),
-        NameObject("/Subtype"): mime_name,
         NameObject("/EF"): DictionaryObject({
             NameObject("/F"): embedded_ref,
-            NameObject("/UF"): embedded_ref,
         }),
+        NameObject("/Desc"): TextStringObject("Factur-X Invoice Data"),
+        NameObject("/AFRelationship"): NameObject("/Alternative"),
     })
     filespec_ref = writer._add_object(filespec)
 
-    # 3) Name tree /EmbeddedFiles.
+    # 3) Name tree /EmbeddedFiles directement dans le Catalog.
     embedded_files_tree = DictionaryObject({
         NameObject("/Names"): ArrayObject([TextStringObject(filename), filespec_ref])
     })
-    embedded_files_ref = writer._add_object(embedded_files_tree)
-    names = DictionaryObject({NameObject("/EmbeddedFiles"): embedded_files_ref})
-    writer._root_object[NameObject("/Names")] = writer._add_object(names)
+    names = DictionaryObject({
+        NameObject("/EmbeddedFiles"): embedded_files_tree
+    })
+    writer._root_object[NameObject("/Names")] = names
 
     # 4) Associated Files au niveau Catalog : même FileSpec indirect.
     writer._root_object[NameObject("/AF")] = ArrayObject([filespec_ref])
+
+    # 5) Marquage minimal comme PDF marqué, présent dans le PDF de référence.
+    writer._root_object[NameObject("/MarkInfo")] = DictionaryObject({
+        NameObject("/Marked"): BooleanObject(True)
+    })
 
     # Identifiant trailer requis PDF/A.
     writer._ID = ArrayObject([ByteStringObject(os.urandom(16)), ByteStringObject(os.urandom(16))])

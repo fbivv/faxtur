@@ -98,37 +98,76 @@ def xmp_packet(title: str) -> bytes:
       <fx:DocumentType>INVOICE</fx:DocumentType>
       <fx:DocumentFileName>factur-x.xml</fx:DocumentFileName>
       <fx:Version>1.0</fx:Version>
-      <fx:ConformanceLevel>BASIC WL</fx:ConformanceLevel>
+      <fx:ConformanceLevel>BASIC</fx:ConformanceLevel>
     </rdf:Description>
   </rdf:RDF>
 </x:xmpmeta>
 <?xpacket end="w"?>"""
     return x.encode("utf-8")
 
+def _ghostscript_candidates() -> list[Path]:
+    """Chemins possibles vers l'exécutable Ghostscript."""
+    candidates: list[Path] = []
+
+    if GHOSTSCRIPT:
+        candidates.append(Path(GHOSTSCRIPT))
+
+    for name in ("gswin64c", "gswin32c", "gs"):
+        found = shutil.which(name)
+        if found:
+            candidates.append(Path(found))
+
+    if os.name == "nt":
+        for base in (Path("C:/Program Files/gs"), Path("C:/Program Files (x86)/gs")):
+            if base.exists():
+                candidates.extend(base.glob("gs*/bin/gswin64c.exe"))
+                candidates.extend(base.glob("gs*/bin/gswin32c.exe"))
+
+    # Déduplication en conservant l'ordre.
+    result: list[Path] = []
+    seen: set[str] = set()
+    for c in candidates:
+        try:
+            key = str(c.resolve()).lower()
+        except Exception:
+            key = str(c).lower()
+        if key not in seen:
+            seen.add(key)
+            result.append(c)
+    return result
+
+
+def _select_ghostscript() -> Path:
+    """Sélectionne l'exécutable Ghostscript.
+
+    Important : on ne bloque pas si gsdll64.dll n'est pas dans le même dossier
+    que gswin64c.exe. Selon l'installation Windows, la DLL peut être trouvée
+    par le PATH système ou être chargée autrement par Ghostscript.
+
+    Si Ghostscript échoue réellement au lancement, l'erreur complète sera
+    remontée par normalize_pdfa_with_ghostscript().
+    """
+    checked: list[str] = []
+
+    for exe in _ghostscript_candidates():
+        if exe.exists():
+            return exe
+        checked.append(f"{exe} : absent")
+
+    raise FileNotFoundError(
+        "Ghostscript introuvable.\n"
+        "Chemins testés :\n- " + "\n- ".join(checked)
+    )
+
+
 def normalize_pdfa_with_ghostscript(input_pdf: str | Path) -> Path:
     """Convertit le PDF source en PDF/A-3B avec Ghostscript.
 
-    Important : on ne revient plus silencieusement au PDF original.
-    Si Ghostscript échoue, on lève une erreur explicite. Sinon l'application
-    embarque le XML dans un PDF non normalisé, ce qui donne exactement les
-    erreurs veraPDF : polices non embarquées + DeviceRGB/DeviceGray.
+    Si Ghostscript échoue, on lève une erreur explicite. On ne revient jamais
+    silencieusement au PDF original, sinon veraPDF signale ensuite polices non
+    embarquées + DeviceRGB/DeviceGray.
     """
-    gs = str(GHOSTSCRIPT) if GHOSTSCRIPT and Path(GHOSTSCRIPT).exists() else (
-        shutil.which("gs") or shutil.which("gswin64c") or shutil.which("gswin32c")
-    )
-
-    # Recherche Ghostscript Windows si non présent dans le PATH.
-    if not gs and os.name == "nt":
-        possible_gs = []
-        for base in [Path("C:/Program Files/gs"), Path("C:/Program Files (x86)/gs")]:
-            if base.exists():
-                possible_gs += list(base.glob("gs*/bin/gswin64c.exe"))
-                possible_gs += list(base.glob("gs*/bin/gswin32c.exe"))
-        if possible_gs:
-            gs = str(sorted(possible_gs)[-1])
-
-    if not gs:
-        raise FileNotFoundError("Ghostscript introuvable : vérifiez runtime/ghostscript/bin/gswin64c.exe")
+    gs_path = _select_ghostscript()
 
     icc_profile = first_existing(*icc_candidates())
     if not icc_profile:
@@ -160,7 +199,7 @@ def normalize_pdfa_with_ghostscript(input_pdf: str | Path) -> Path:
 """, encoding="ascii")
 
     cmd = [
-        gs,
+        str(gs_path),
         "-dBATCH",
         "-dNOPAUSE",
         "-dNOOUTERSAVE",
@@ -182,6 +221,10 @@ def normalize_pdfa_with_ghostscript(input_pdf: str | Path) -> Path:
         str(input_pdf),
     ]
 
+    env = os.environ.copy()
+    gs_bin = str(gs_path.parent)
+    env["PATH"] = gs_bin + os.pathsep + env.get("PATH", "")
+
     try:
         result = _run_subprocess_hidden(
             cmd,
@@ -189,11 +232,17 @@ def normalize_pdfa_with_ghostscript(input_pdf: str | Path) -> Path:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=180,
+            cwd=str(gs_path.parent),
+            env=env,
         )
         if result.returncode != 0:
             err = (result.stderr or b"").decode("utf-8", errors="replace")
             out = (result.stdout or b"").decode("utf-8", errors="replace")
-            raise RuntimeError("Ghostscript a échoué pendant la conversion PDF/A.\n" + (err or out)[:4000])
+            raise RuntimeError(
+                "Ghostscript a échoué pendant la conversion PDF/A.\n"
+                f"Ghostscript utilisé : {gs_path}\n"
+                + (err or out)[:4000]
+            )
 
         if not out_pdf.exists() or out_pdf.stat().st_size == 0:
             raise RuntimeError("Ghostscript n'a pas produit de PDF/A de sortie.")
@@ -289,37 +338,45 @@ def embed_xml_in_pdf(input_pdf: str | Path, output_pdf: str | Path, xml_bytes: b
         NameObject("/Subtype"): mime_name,
         NameObject("/Params"): DictionaryObject({
             NameObject("/Size"): NumberObject(len(xml_bytes)),
+            NameObject("/CreationDate"): pdf_date_now(),
             NameObject("/ModDate"): pdf_date_now(),
         }),
     })
     embedded_ref = writer._add_object(embedded_stream)
 
-    # 2) File specification indirect. On ajoute aussi /Subtype ici par prudence,
-    # certains validateurs parlent de "file specification dictionary".
+    # 2) File specification indirect.
+    # Structure volontairement proche des PDF Factur-X acceptés par FacturXApp :
+    # - pas de /Subtype dans le Filespec ;
+    # - un seul /EF /F ;
+    # - /Names directement dans le Catalog, pas via deux objets indirects inutiles.
     filespec = DictionaryObject({
         NameObject("/Type"): NameObject("/Filespec"),
         NameObject("/F"): TextStringObject(filename),
         NameObject("/UF"): TextStringObject(filename),
-        NameObject("/Desc"): TextStringObject("Factur-X XML invoice data"),
-        NameObject("/AFRelationship"): NameObject("/Alternative"),
-        NameObject("/Subtype"): mime_name,
         NameObject("/EF"): DictionaryObject({
             NameObject("/F"): embedded_ref,
-            NameObject("/UF"): embedded_ref,
         }),
+        NameObject("/Desc"): TextStringObject("Factur-X Invoice Data"),
+        NameObject("/AFRelationship"): NameObject("/Alternative"),
     })
     filespec_ref = writer._add_object(filespec)
 
-    # 3) Name tree /EmbeddedFiles.
+    # 3) Name tree /EmbeddedFiles directement dans le Catalog.
     embedded_files_tree = DictionaryObject({
         NameObject("/Names"): ArrayObject([TextStringObject(filename), filespec_ref])
     })
-    embedded_files_ref = writer._add_object(embedded_files_tree)
-    names = DictionaryObject({NameObject("/EmbeddedFiles"): embedded_files_ref})
-    writer._root_object[NameObject("/Names")] = writer._add_object(names)
+    names = DictionaryObject({
+        NameObject("/EmbeddedFiles"): embedded_files_tree
+    })
+    writer._root_object[NameObject("/Names")] = names
 
     # 4) Associated Files au niveau Catalog : même FileSpec indirect.
     writer._root_object[NameObject("/AF")] = ArrayObject([filespec_ref])
+
+    # 5) Marquage minimal comme PDF marqué, présent dans le PDF de référence.
+    writer._root_object[NameObject("/MarkInfo")] = DictionaryObject({
+        NameObject("/Marked"): NameObject("true")
+    })
 
     # Identifiant trailer requis PDF/A.
     writer._ID = ArrayObject([ByteStringObject(os.urandom(16)), ByteStringObject(os.urandom(16))])

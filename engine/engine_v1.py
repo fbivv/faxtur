@@ -692,7 +692,7 @@ def build_facturx_xml(company: Dict[str, Any], fields: Dict[str, Any]) -> bytes:
     buyer_electronic = ensure_buyer_electronic_address(fields)
     notes_xml = "\n".join([f"      <ram:IncludedNote><ram:Content>{escape(txt)}</ram:Content><ram:SubjectCode>{code}</ram:SubjectCode></ram:IncludedNote>" for code, txt in default_french_notes()])
 
-    # Profil BASIC WL : plus tolérant, ligne globale unique.
+    # Profil BASIC : autorise une ligne globale unique.
     xml = f'''<?xml version="1.0" encoding="UTF-8"?>
 <rsm:CrossIndustryInvoice
  xmlns:rsm="urn:un:unece:uncefact:data:standard:CrossIndustryInvoice:100"
@@ -700,7 +700,7 @@ def build_facturx_xml(company: Dict[str, Any], fields: Dict[str, Any]) -> bytes:
  xmlns:udt="urn:un:unece:uncefact:data:standard:UnqualifiedDataType:100">
   <rsm:ExchangedDocumentContext>
     <ram:GuidelineSpecifiedDocumentContextParameter>
-      <ram:ID>urn:factur-x.eu:1p0:basicwl</ram:ID>
+      <ram:ID>urn:factur-x.eu:1p0:basic</ram:ID>
     </ram:GuidelineSpecifiedDocumentContextParameter>
   </rsm:ExchangedDocumentContext>
   <rsm:ExchangedDocument>

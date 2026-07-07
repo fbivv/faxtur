@@ -98,50 +98,90 @@ def xmp_packet(title: str) -> bytes:
       <fx:DocumentType>INVOICE</fx:DocumentType>
       <fx:DocumentFileName>factur-x.xml</fx:DocumentFileName>
       <fx:Version>1.0</fx:Version>
-      <fx:ConformanceLevel>BASIC WL</fx:ConformanceLevel>
+      <fx:ConformanceLevel>BASIC</fx:ConformanceLevel>
     </rdf:Description>
   </rdf:RDF>
 </x:xmpmeta>
 <?xpacket end="w"?>"""
     return x.encode("utf-8")
 
-def normalize_pdfa_with_ghostscript(input_pdf: str | Path) -> Optional[Path]:
-    """Convertit le PDF source en PDF/A-3b avec OutputIntent sRGB.
+def _ghostscript_candidates() -> list[Path]:
+    """Chemins possibles vers l'exécutable Ghostscript."""
+    candidates: list[Path] = []
 
-    Correction v4.7.2 : recherche robuste d'un profil ICC, y compris :
-    - profil embarqué dans ./icc/srgb.icc ;
-    - profils Ghostscript Windows ;
-    - profils Linux usuels.
+    if GHOSTSCRIPT:
+        candidates.append(Path(GHOSTSCRIPT))
 
-    Sans ICC, Ghostscript peut produire un PDF visuellement correct mais veraPDF
-    signale DeviceRGB/DeviceGray without OutputIntent. On refuse donc la
-    normalisation si aucun ICC n'est trouvé.
-    """
-    gs = str(GHOSTSCRIPT) if GHOSTSCRIPT.exists() else (shutil.which("gs") or shutil.which("gswin64c") or shutil.which("gswin32c"))
+    for name in ("gswin64c", "gswin32c", "gs"):
+        found = shutil.which(name)
+        if found:
+            candidates.append(Path(found))
 
-    # Recherche Ghostscript Windows si non présent dans le PATH.
-    if not gs and os.name == "nt":
-        possible_gs = []
-        for base in [Path("C:/Program Files/gs"), Path("C:/Program Files (x86)/gs")]:
+    if os.name == "nt":
+        for base in (Path("C:/Program Files/gs"), Path("C:/Program Files (x86)/gs")):
             if base.exists():
-                possible_gs += list(base.glob("gs*/bin/gswin64c.exe"))
-                possible_gs += list(base.glob("gs*/bin/gswin32c.exe"))
-        if possible_gs:
-            gs = str(sorted(possible_gs)[-1])
+                candidates.extend(base.glob("gs*/bin/gswin64c.exe"))
+                candidates.extend(base.glob("gs*/bin/gswin32c.exe"))
 
-    if not gs:
-        return None
+    # Déduplication en conservant l'ordre.
+    result: list[Path] = []
+    seen: set[str] = set()
+    for c in candidates:
+        try:
+            key = str(c.resolve()).lower()
+        except Exception:
+            key = str(c).lower()
+        if key not in seen:
+            seen.add(key)
+            result.append(c)
+    return result
+
+
+def _select_ghostscript() -> Path:
+    """Sélectionne l'exécutable Ghostscript.
+
+    Important : on ne bloque pas si gsdll64.dll n'est pas dans le même dossier
+    que gswin64c.exe. Selon l'installation Windows, la DLL peut être trouvée
+    par le PATH système ou être chargée autrement par Ghostscript.
+
+    Si Ghostscript échoue réellement au lancement, l'erreur complète sera
+    remontée par normalize_pdfa_with_ghostscript().
+    """
+    checked: list[str] = []
+
+    for exe in _ghostscript_candidates():
+        if exe.exists():
+            return exe
+        checked.append(f"{exe} : absent")
+
+    raise FileNotFoundError(
+        "Ghostscript introuvable.\n"
+        "Chemins testés :\n- " + "\n- ".join(checked)
+    )
+
+
+def normalize_pdfa_with_ghostscript(input_pdf: str | Path) -> Path:
+    """Convertit le PDF source en PDF/A-3B avec Ghostscript.
+
+    Si Ghostscript échoue, on lève une erreur explicite. On ne revient jamais
+    silencieusement au PDF original, sinon veraPDF signale ensuite polices non
+    embarquées + DeviceRGB/DeviceGray.
+    """
+    gs_path = _select_ghostscript()
 
     icc_profile = first_existing(*icc_candidates())
     if not icc_profile:
-        raise FileNotFoundError("Profil ICC introuvable")
-    icc_profile = str(icc_profile)
+        raise FileNotFoundError("Profil ICC introuvable : vérifiez runtime/icc/sRGB.icc")
+
+    input_pdf = Path(input_pdf)
+    if not input_pdf.exists():
+        raise FileNotFoundError(f"PDF source introuvable : {input_pdf}")
+
     tmpdir = Path(tempfile.gettempdir())
     out_pdf = tmpdir / f"facturx_pdfa_{uuid.uuid4().hex}.pdf"
     ps_file = tmpdir / f"PDFA_def_{uuid.uuid4().hex}.ps"
 
-    # Utiliser des slashs évite les problèmes d'échappement Windows dans PostScript.
-    icc_ps = icc_profile.replace("\\", "/")
+    icc_ps = str(icc_profile).replace("\\", "/")
     ps_file.write_text(f"""%!
 /ICCProfile ({icc_ps}) def
 [ /_objdef {{icc_PDFA}} /type /stream /OBJ pdfmark
@@ -159,30 +199,90 @@ def normalize_pdfa_with_ghostscript(input_pdf: str | Path) -> Optional[Path]:
 """, encoding="ascii")
 
     cmd = [
-        gs,
-        "-dBATCH", "-dNOPAUSE", "-dNOOUTERSAVE", "-dNOSAFER",
+        str(gs_path),
+        "-dBATCH",
+        "-dNOPAUSE",
+        "-dNOOUTERSAVE",
+        "-dNOSAFER",
         "-sDEVICE=pdfwrite",
         "-dPDFA=3",
         "-dPDFACompatibilityPolicy=1",
         "-dEmbedAllFonts=true",
         "-dSubsetFonts=true",
+        "-dCompressFonts=true",
+        "-dUseCIEColor",
         "-sProcessColorModel=DeviceRGB",
         "-sColorConversionStrategy=RGB",
         "-sColorConversionStrategyForImages=RGB",
-        f"-sOutputICCProfile={icc_profile}",
+        "-sDefaultRGBProfile=" + str(icc_profile),
+        "-sOutputICCProfile=" + str(icc_profile),
         f"-sOutputFile={out_pdf}",
-        str(ps_file), str(input_pdf),
+        str(ps_file),
+        str(input_pdf),
     ]
+
+    env = os.environ.copy()
+    gs_bin = str(gs_path.parent)
+    env["PATH"] = gs_bin + os.pathsep + env.get("PATH", "")
+
     try:
-        _run_subprocess_hidden(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
-        return out_pdf if out_pdf.exists() and out_pdf.stat().st_size > 0 else None
-    except Exception:
-        return None
+        result = _run_subprocess_hidden(
+            cmd,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=180,
+            cwd=str(gs_path.parent),
+            env=env,
+        )
+        if result.returncode != 0:
+            err = (result.stderr or b"").decode("utf-8", errors="replace")
+            out = (result.stdout or b"").decode("utf-8", errors="replace")
+            raise RuntimeError(
+                "Ghostscript a échoué pendant la conversion PDF/A.\n"
+                f"Ghostscript utilisé : {gs_path}\n"
+                + (err or out)[:4000]
+            )
+
+        if not out_pdf.exists() or out_pdf.stat().st_size == 0:
+            raise RuntimeError("Ghostscript n'a pas produit de PDF/A de sortie.")
+
+        return out_pdf
     finally:
         try:
             ps_file.unlink(missing_ok=True)
         except Exception:
             pass
+
+
+def add_pdfa_output_intent(writer: PdfWriter) -> None:
+    """Ajoute explicitement un OutputIntent sRGB au catalogue final pypdf.
+
+    pypdf réécrit le fichier après Ghostscript pour ajouter factur-x.xml.
+    Cette fonction remet un OutputIntent propre dans le PDF final, afin que
+    veraPDF ne signale pas DeviceRGB/DeviceGray sans profil de sortie.
+    """
+    icc_profile = first_existing(*icc_candidates())
+    if not icc_profile:
+        raise FileNotFoundError("Profil ICC introuvable : vérifiez runtime/icc/sRGB.icc")
+
+    icc_bytes = Path(icc_profile).read_bytes()
+    icc_stream = DecodedStreamObject()
+    icc_stream.set_data(icc_bytes)
+    icc_stream.update({
+        NameObject("/N"): NumberObject(3),
+        NameObject("/Alternate"): NameObject("/DeviceRGB"),
+    })
+    icc_ref = writer._add_object(icc_stream)
+
+    output_intent = DictionaryObject({
+        NameObject("/Type"): NameObject("/OutputIntent"),
+        NameObject("/S"): NameObject("/GTS_PDFA1"),
+        NameObject("/OutputConditionIdentifier"): TextStringObject("sRGB IEC61966-2.1"),
+        NameObject("/Info"): TextStringObject("sRGB IEC61966-2.1"),
+        NameObject("/DestOutputProfile"): icc_ref,
+    })
+    writer._root_object[NameObject("/OutputIntents")] = ArrayObject([writer._add_object(output_intent)])
 
 # ---------------------------------------------------------------------------
 # XML Factur-X simple
@@ -204,20 +304,15 @@ def embed_xml_in_pdf(input_pdf: str | Path, output_pdf: str | Path, xml_bytes: b
         raise RuntimeError("pypdf absent. Installez : python -m pip install pypdf")
 
     normalized = normalize_pdfa_with_ghostscript(input_pdf)
-    source_pdf = normalized if normalized else Path(input_pdf)
+    source_pdf = normalized
 
     reader = PdfReader(str(source_pdf))
     writer = PdfWriter()
     for page in reader.pages:
         writer.add_page(page)
 
-    # Conserver les OutputIntents créés par Ghostscript pour PDF/A.
-    try:
-        src_root = reader.trailer["/Root"]
-        if "/OutputIntents" in src_root:
-            writer._root_object[NameObject("/OutputIntents")] = src_root["/OutputIntents"].clone(writer)
-    except Exception:
-        pass
+    # Remettre explicitement un OutputIntent dans le PDF final réécrit par pypdf.
+    add_pdfa_output_intent(writer)
 
     title = Path(input_pdf).stem
     writer.add_metadata({
@@ -254,14 +349,12 @@ def embed_xml_in_pdf(input_pdf: str | Path, output_pdf: str | Path, xml_bytes: b
         NameObject("/Type"): NameObject("/Filespec"),
         NameObject("/F"): TextStringObject(filename),
         NameObject("/UF"): TextStringObject(filename),
-        NameObject("/Desc"): TextStringObject("Factur-X XML invoice data"),
+        NameObject("/Desc"): TextStringObject("Factur-X Invoice Data"),
         NameObject("/AFRelationship"): NameObject("/Alternative"),
-        NameObject("/Subtype"): mime_name,
         NameObject("/EF"): DictionaryObject({
-            NameObject("/F"): embedded_ref,
-            NameObject("/UF"): embedded_ref,
-        }),
-    })
+        NameObject("/F"): embedded_ref,
+    }),
+})
     filespec_ref = writer._add_object(filespec)
 
     # 3) Name tree /EmbeddedFiles.
@@ -282,11 +375,10 @@ def embed_xml_in_pdf(input_pdf: str | Path, output_pdf: str | Path, xml_bytes: b
     with open(output_pdf, "wb") as f:
         writer.write(f)
 
-    if normalized:
-        try:
-            Path(normalized).unlink(missing_ok=True)
-        except Exception:
-            pass
+    try:
+        Path(normalized).unlink(missing_ok=True)
+    except Exception:
+        pass
 
 # ---------------------------------------------------------------------------
 # Conversion dossier
